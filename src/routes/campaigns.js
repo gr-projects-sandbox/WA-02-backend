@@ -56,14 +56,16 @@ router.post("/", async (req, res) => {
 
   const budgetResource = {
     resource_name: budgetResourceName,
-    name: `${name} Budget`,
+    name: `${uniqueName} Budget`,
     amount_micros: budgetAmountMicros,
     delivery_method: enums.BudgetDeliveryMethod.STANDARD,
     explicitly_shared: false,
   };
 
+  const uniqueName = `${name} (${new Date().toISOString().slice(0, 16).replace("T", " ")})`;
+
   const campaignResource = {
-    name,
+    name: uniqueName,
     campaign_budget: budgetResourceName,
     advertising_channel_type: enums.AdvertisingChannelType.SEARCH,
     status: enums.CampaignStatus.PAUSED,
