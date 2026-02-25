@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { customer } = require("../lib/googleAds");
 const { db } = require("../lib/db");
+const { handleGoogleAdsError } = require("../lib/helpers");
 
 const router = Router();
 
@@ -52,9 +53,7 @@ router.get("/campaigns", async (req, res) => {
     `);
     res.json(campaigns);
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("admin campaigns error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "admin campaigns");
   }
 });
 

@@ -2,6 +2,7 @@ const { Router } = require("express");
 const { enums, ResourceNames } = require("google-ads-api");
 const { customer } = require("../lib/googleAds");
 const { db } = require("../lib/db");
+const { verifyCampaignOwnership, handleGoogleAdsError, extractResourceId, parseId } = require("../lib/helpers");
 
 const router = Router();
 
@@ -35,9 +36,7 @@ router.get("/", async (req, res) => {
     `);
     res.json(campaigns);
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("GET /api/campaigns error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "GET /api/campaigns");
   }
 });
 
@@ -56,16 +55,14 @@ router.post("/", async (req, res) => {
 
   const budgetResource = {
     resource_name: budgetResourceName,
-    name: `${uniqueName} Budget`,
+    name: `${name} Budget`,
     amount_micros: budgetAmountMicros,
     delivery_method: enums.BudgetDeliveryMethod.STANDARD,
     explicitly_shared: false,
   };
 
-  const uniqueName = `${name} (${new Date().toISOString().slice(0, 16).replace("T", " ")})`;
-
   const campaignResource = {
-    name: uniqueName,
+    name,
     campaign_budget: budgetResourceName,
     advertising_channel_type: enums.AdvertisingChannelType.SEARCH,
     status: enums.CampaignStatus.PAUSED,
@@ -92,16 +89,11 @@ router.post("/", async (req, res) => {
       { entity: "campaign", operation: "create", resource: campaignResource },
     ]);
 
-    // Extract campaign ID from resource name (customers/123/campaigns/456 -> 456)
-    const responses = result?.mutate_operation_responses || result?.results || [];
-    const campaignEntry = responses.find((r) => r.campaign_result);
-    const campaignResourceName = campaignEntry?.campaign_result?.resource_name;
-    if (!campaignResourceName) {
-      console.error("No campaign_result in response:", JSON.stringify(responses, null, 2));
+    const campaignId = extractResourceId(result, "campaign");
+    if (!campaignId) {
+      console.error("No campaign_result in response:", JSON.stringify(result, null, 2));
       return res.status(500).json({ error: "Kampania utworzona w Google Ads, ale nie udalo sie odczytac ID" });
     }
-
-    const campaignId = campaignResourceName.split("/").pop();
     await db.execute({
       sql: "INSERT INTO user_campaigns (user_id, campaign_id) VALUES (?, ?)",
       args: [req.user.id, campaignId],
@@ -109,13 +101,7 @@ router.post("/", async (req, res) => {
 
     res.status(201).json({ results: result, campaignId });
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("--- POST /api/campaigns FULL ERROR ---");
-    console.error(JSON.stringify(details, null, 2));
-    console.error("--- req.body was ---");
-    console.error(JSON.stringify(req.body, null, 2));
-    console.error("--- END ---");
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "POST /api/campaigns");
   }
 });
 
@@ -123,16 +109,13 @@ router.post("/", async (req, res) => {
 // Body: { status: "ENABLED" | "PAUSED" }
 router.patch("/:campaignId/status", async (req, res) => {
   const { status } = req.body;
-  const campaignId = req.params.campaignId;
-  if (!/^\d+$/.test(campaignId)) {
+  const campaignId = parseId(req.params.campaignId);
+  if (!campaignId) {
     return res.status(400).json({ error: "Invalid campaignId" });
   }
 
-  const owned = await db.execute({
-    sql: "SELECT 1 FROM user_campaigns WHERE user_id = ? AND campaign_id = ?",
-    args: [req.user.id, campaignId],
-  });
-  if (owned.rows.length === 0) {
+  const owned = await verifyCampaignOwnership(req, campaignId);
+  if (!owned) {
     return res.status(403).json({ error: "Brak dostepu do tej kampanii" });
   }
 
@@ -156,9 +139,7 @@ router.patch("/:campaignId/status", async (req, res) => {
     ]);
     res.json({ results: result });
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("PATCH campaign status error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "PATCH campaign status");
   }
 });
 

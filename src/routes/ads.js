@@ -1,7 +1,8 @@
 const { Router } = require("express");
 const { enums, ResourceNames } = require("google-ads-api");
 const { customer } = require("../lib/googleAds");
-const { db } = require("../lib/db");
+const { verifyAdGroupOwnership, handleGoogleAdsError, parseId } = require("../lib/helpers");
+const { HEADLINE_MAX, DESCRIPTION_MAX, MIN_HEADLINES, MIN_DESCRIPTIONS } = require("../lib/constants");
 
 const router = Router();
 
@@ -9,45 +10,29 @@ const router = Router();
 // Body: { headlines: string[], descriptions: string[], finalUrl: string }
 router.post("/:adGroupId/ads", async (req, res) => {
   const { headlines, descriptions, finalUrl } = req.body;
-  const adGroupId = parseInt(req.params.adGroupId, 10);
-  if (isNaN(adGroupId)) {
+  const adGroupId = parseId(req.params.adGroupId);
+  if (!adGroupId) {
     return res.status(400).json({ error: "Invalid adGroupId" });
   }
 
-  // Ownership check: ad group -> campaign -> user
-  try {
-    const adGroup = await customer.query(`
-      SELECT campaign.id FROM ad_group WHERE ad_group.id = ${adGroupId} LIMIT 1
-    `);
-    if (adGroup.length === 0) {
-      return res.status(404).json({ error: "Ad group not found" });
-    }
-    const campaignId = adGroup[0].campaign.id;
-    const owned = await db.execute({
-      sql: "SELECT 1 FROM user_campaigns WHERE user_id = ? AND campaign_id = ?",
-      args: [req.user.id, String(campaignId)],
-    });
-    if (owned.rows.length === 0) {
-      return res.status(403).json({ error: "Brak dostepu do tej grupy reklam" });
-    }
-  } catch (err) {
-    console.error("Ownership check error:", err);
-    return res.status(500).json({ error: "Blad weryfikacji dostepu" });
+  const hasAccess = await verifyAdGroupOwnership(req, adGroupId);
+  if (!hasAccess) {
+    return res.status(403).json({ error: "Brak dostepu do tej grupy reklam" });
   }
 
-  if (!headlines || headlines.length < 3) {
-    return res.status(400).json({ error: "At least 3 headlines are required" });
+  if (!headlines || headlines.length < MIN_HEADLINES) {
+    return res.status(400).json({ error: `At least ${MIN_HEADLINES} headlines are required` });
   }
-  if (!descriptions || descriptions.length < 2) {
-    return res.status(400).json({ error: "At least 2 descriptions are required" });
+  if (!descriptions || descriptions.length < MIN_DESCRIPTIONS) {
+    return res.status(400).json({ error: `At least ${MIN_DESCRIPTIONS} descriptions are required` });
   }
-  const badHeadline = headlines.find((h) => typeof h !== "string" || h.length > 30);
+  const badHeadline = headlines.find((h) => typeof h !== "string" || h.length > HEADLINE_MAX);
   if (badHeadline !== undefined) {
-    return res.status(400).json({ error: "Kazdy headline max 30 znakow" });
+    return res.status(400).json({ error: `Kazdy headline max ${HEADLINE_MAX} znakow` });
   }
-  const badDesc = descriptions.find((d) => typeof d !== "string" || d.length > 90);
+  const badDesc = descriptions.find((d) => typeof d !== "string" || d.length > DESCRIPTION_MAX);
   if (badDesc !== undefined) {
-    return res.status(400).json({ error: "Kazdy description max 90 znakow" });
+    return res.status(400).json({ error: `Kazdy description max ${DESCRIPTION_MAX} znakow` });
   }
   if (!finalUrl) {
     return res.status(400).json({ error: "finalUrl is required" });
@@ -84,9 +69,7 @@ router.post("/:adGroupId/ads", async (req, res) => {
     ]);
     res.status(201).json({ results: result });
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("ads error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "POST ads");
   }
 });
 

@@ -1,33 +1,15 @@
 const { Router } = require("express");
 const { enums, ResourceNames } = require("google-ads-api");
 const { customer } = require("../lib/googleAds");
-const { db } = require("../lib/db");
+const { verifyAdGroupOwnership, handleGoogleAdsError, parseId } = require("../lib/helpers");
+const { KEYWORD_MAX } = require("../lib/constants");
 
 const router = Router();
 
-// Helper: sprawdz czy user jest wlascicielem kampanii do ktorej nalezy ad group
-async function verifyAdGroupOwnership(req, adGroupId) {
-  try {
-    const adGroup = await customer.query(`
-      SELECT campaign.id FROM ad_group WHERE ad_group.id = ${adGroupId} LIMIT 1
-    `);
-    if (adGroup.length === 0) return false;
-    const campaignId = adGroup[0].campaign.id;
-    const owned = await db.execute({
-      sql: "SELECT 1 FROM user_campaigns WHERE user_id = ? AND campaign_id = ?",
-      args: [req.user.id, String(campaignId)],
-    });
-    return owned.rows.length > 0;
-  } catch (err) {
-    console.error("Ownership check error:", err.message);
-    return false;
-  }
-}
-
 // GET /api/adgroups/:adGroupId/keywords - lista slow kluczowych
 router.get("/:adGroupId/keywords", async (req, res) => {
-  const adGroupId = parseInt(req.params.adGroupId, 10);
-  if (isNaN(adGroupId)) {
+  const adGroupId = parseId(req.params.adGroupId);
+  if (!adGroupId) {
     return res.status(400).json({ error: "Invalid adGroupId" });
   }
 
@@ -50,9 +32,7 @@ router.get("/:adGroupId/keywords", async (req, res) => {
     `);
     res.json(keywords);
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("keywords error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "GET keywords");
   }
 });
 
@@ -61,8 +41,8 @@ router.get("/:adGroupId/keywords", async (req, res) => {
 // matchType: "EXACT" | "PHRASE" | "BROAD"
 router.post("/:adGroupId/keywords", async (req, res) => {
   const { keywords } = req.body;
-  const adGroupId = parseInt(req.params.adGroupId, 10);
-  if (isNaN(adGroupId)) {
+  const adGroupId = parseId(req.params.adGroupId);
+  if (!adGroupId) {
     return res.status(400).json({ error: "Invalid adGroupId" });
   }
 
@@ -74,9 +54,9 @@ router.post("/:adGroupId/keywords", async (req, res) => {
   if (!keywords || !keywords.length) {
     return res.status(400).json({ error: "keywords array is required" });
   }
-  const badKw = keywords.find((k) => typeof k.text !== "string" || k.text.trim().length === 0 || k.text.length > 80);
+  const badKw = keywords.find((k) => typeof k.text !== "string" || k.text.trim().length === 0 || k.text.length > KEYWORD_MAX);
   if (badKw) {
-    return res.status(400).json({ error: "Kazde slowo kluczowe musi miec 1-80 znakow" });
+    return res.status(400).json({ error: `Kazde slowo kluczowe musi miec 1-${KEYWORD_MAX} znakow` });
   }
   const validMatchTypes = ["EXACT", "PHRASE", "BROAD"];
   const badMatch = keywords.find((k) => k.matchType && !validMatchTypes.includes(k.matchType));
@@ -104,9 +84,7 @@ router.post("/:adGroupId/keywords", async (req, res) => {
     const result = await customer.mutateResources(operations);
     res.status(201).json({ results: result });
   } catch (err) {
-    const details = err.errors || [{ message: err.message }];
-    console.error("keywords error:", JSON.stringify(details, null, 2));
-    res.status(400).json({ error: details[0]?.message || "Google Ads API error" });
+    handleGoogleAdsError(res, err, "POST keywords");
   }
 });
 
